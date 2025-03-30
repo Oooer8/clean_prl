@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class RepresentationConfig:
-    type: str = "pointnet"
+    type: str = "mlpnet"
     hidden_dims: tuple = (64, 128, 256)
     output_dim: int = 256
     dropout: float = 0.1
@@ -12,14 +12,14 @@ class RepresentationConfig:
 class PolicyConfig:
     type: str = "mlp"
     hidden_dims: tuple = (256, 128)
-    activation: str = "relu"
+    activation: str = "ReLU"
     output_activation: str = "tanh"
 
 @dataclass
 class ValueConfig:
     type: str = "mlp"
     hidden_dims: tuple = (256, 128)
-    activation: str = "relu"
+    activation: str = "ReLU"
 
 @dataclass
 class BufferConfig:

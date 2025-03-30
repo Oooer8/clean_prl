@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 import numpy as np
 import random
 from copy import deepcopy
 from core.representations.pointnet import PointNet
+from core.representations.mlpnet import MLPNet
 from core.policies.mlp import MLPPolicy
 from core.values.mlp import MLPValue
 from core.buffers.replay import ReplayBuffer
@@ -13,9 +15,10 @@ from .base import BaseAgent
 class DQNAgent(BaseAgent):
     def __init__(self, state_dim, action_dim, config):
         super().__init__(config)
+        self.action_dim = action_dim
         
         # Networks
-        self.representation = PointNet(config.representation).to(self.device)
+        self.representation = MLPNet(config.representation).to(self.device)
         self.q_net = MLPValue(
             input_dim=config.representation.output_dim + action_dim,
             config=config.value

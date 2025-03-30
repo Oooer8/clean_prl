@@ -13,7 +13,7 @@ class ReplayBuffer(BaseBuffer):
         self.dones = np.zeros(self.capacity, dtype=np.float32)
     
     def add(self, state, action, reward, next_state, done):
-        idx = self.pos % self.capacity
+        idx = self.pos % self.capacity        
         
         self.states[idx] = state
         self.actions[idx] = action
