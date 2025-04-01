@@ -42,7 +42,7 @@ def plot_rewards(episode_rewards, window_size=10):
     plt.savefig('ddpg_training_rewards.png')
     plt.close()
 
-def test_run(env_name="Pendulum-v1", num_episodes=1000, render_freq=50, plot_freq=10, save_freq=100):
+def test_run(env_name="Pendulum-v1", num_episodes=10000, render_freq=50, plot_freq=10, save_freq=100):
     # Initialize
     config = Config()
     env = make_env(env_name)
@@ -98,7 +98,7 @@ def test_run(env_name="Pendulum-v1", num_episodes=1000, render_freq=50, plot_fre
                     pass
             
             # Select action with noise (exploration)
-            epsilon = max(0.1, 1.0 - episode/200)  # 衰减的探索率
+            epsilon = max(0.01, 1.0 - episode/200)  # 衰减的探索率
             action = agent.act(state, epsilon=epsilon)
             
             # Step environment

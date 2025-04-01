@@ -4,14 +4,14 @@ from dataclasses import dataclass
 @dataclass
 class PolicyConfig:
     type: str = "mlp"
-    hidden_dims: tuple = (256, 256)
+    hidden_dims: tuple = (32, 32)
     activation: str = "ReLU"
     output_activation: str = "tanh"  # 确保动作范围在[-1, 1]
 
 @dataclass
 class ValueConfig:
     type: str = "mlp"
-    hidden_dims: tuple = (256, 256)
+    hidden_dims: tuple = (32, 32)
     activation: str = "ReLU"
 
 @dataclass

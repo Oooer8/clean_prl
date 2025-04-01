@@ -15,8 +15,10 @@ import matplotlib.pyplot as plt
 import time
 import argparse
 
-def make_env(env_name):
-    env = gym.make(env_name)
+def make_env(env_name, render=False):
+    # Only set render_mode to 'human' if rendering is enabled
+    render_mode = 'human' if render else None
+    env = gym.make(env_name, render_mode=render_mode)
     env = ObservationWrapper(env)
     if isinstance(env.action_space, gym.spaces.Dict):
         env = DictActionWrapper(env)
@@ -60,7 +62,10 @@ def main():
     
     # 初始化
     config = Config()
-    env = make_env(args.env)
+    
+    # 决定是否渲染环境
+    should_render = args.render
+    env = make_env(args.env, render=should_render)
     adapter = DefaultAdapter()
     
     # 设置随机种子
@@ -82,6 +87,7 @@ def main():
     print(f"Starting training on {args.env} with DDPG (without representation)")
     print(f"State dimension: {state_dim}, Action dimension: {action_dim}")
     print(f"Device: {config.device}, Batch size: {config.buffer.batch_size}")
+    print(f"Rendering: {'Enabled' if should_render else 'Disabled'}")
     print("-" * 50)
     
     # 训练循环
@@ -89,7 +95,23 @@ def main():
         episode_start_time = time.time()
         
         # 重置环境和噪声过程
-        obs, info = env.reset()
+        try:
+            # 尝试新版本的Gym API，reset返回(obs, info)
+            reset_result = env.reset()
+            if isinstance(reset_result, tuple) and len(reset_result) == 2:
+                obs, info = reset_result
+            else:
+                # 旧版本的Gym API，reset只返回obs
+                obs = reset_result
+                info = {}
+        except Exception as e:
+            print(f"Error during environment reset: {e}")
+            # 尝试重新创建环境
+            env.close()
+            env = make_env(args.env, render=should_render)
+            set_seed(env, config.seed)
+            obs, info = env.reset()
+        
         agent.noise.reset()
         
         state = adapter.adapt_observation(obs)
@@ -98,18 +120,7 @@ def main():
         steps = 0
         episode_loss = []
         
-        # 是否渲染这一集
-        should_render = (episode % args.render_freq == 0) and args.render
-        
         while not done:
-            # 渲染环境（如果需要）
-            if should_render:
-                try:
-                    env.render()
-                except:
-                    # 某些环境可能不支持渲染
-                    pass
-            
             # 选择带噪声的动作（探索）
             epsilon = max(0.1, 1.0 - episode/200)  # 衰减的探索率
             action = agent.act(state, epsilon=epsilon)
@@ -177,6 +188,16 @@ def main():
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             agent.save(save_path)
             print(f"Model saved to {save_path}")
+        
+        # 根据render_freq决定是否需要切换渲染模式
+        if args.render and ((episode + 1) % args.render_freq == 0):
+            # 如果下一个episode需要改变渲染状态
+            next_should_render = ((episode + 1) % args.render_freq == 0)
+            if should_render != next_should_render:
+                env.close()
+                should_render = next_should_render
+                env = make_env(args.env, render=should_render)
+                set_seed(env, config.seed)
     
     # 训练结束，保存最终模型和图表
     final_save_path = f"models/ddpg_without_rep_{args.env.replace('-', '_')}_final.pt"
@@ -204,10 +225,10 @@ def main():
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train DDPG agent without representation layer')
-    parser.add_argument('--env', type=str, default='Pendulum-v1', help='Environment name')
+    parser.add_argument('--env', type=str, default='MountainCarContinuous-v0', help='Environment name')
     parser.add_argument('--episodes', type=int, default=1000, help='Number of episodes to train')
-    parser.add_argument('--render', action='store_true', help='Render environment')
-    parser.add_argument('--render_freq', type=int, default=50, help='Frequency of rendering')
+    parser.add_argument('--render', action='store_true', help='Enable rendering')
+    parser.add_argument('--render_freq', type=int, default=40, help='Render every N episodes')
     parser.add_argument('--plot_freq', type=int, default=10, help='Frequency of plotting rewards')
     parser.add_argument('--save_freq', type=int, default=100, help='Frequency of saving model')
     parser.add_argument('--eval_freq', type=int, default=50, help='Frequency of evaluation')

@@ -3,145 +3,114 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
-import random
 from copy import deepcopy
 from core.representations.mlpnet import MLPNet
 from core.policies.mlp import MLPPolicy
 from core.values.mlp import MLPValue
 from core.buffers.replay import ReplayBuffer
-from .base import BaseAgent
 
-class DDPGAgent(BaseAgent):
+class DDPGAgent:
     def __init__(self, state_dim, action_dim, config):
-        super().__init__(config)
+        self.config = config
+        self.device = config.device
         self.action_dim = action_dim
         
-        # Networks
-        self.representation = MLPNet(config.representation).to(self.device)
-        
-        # Actor (Policy) Network
+        # Unified representation network
+        self.representation = MLPNet(config.representation, input_dim=state_dim).to(self.device)
         rep_output_dim = config.representation.output_dim
-        self.actor = MLPPolicy(
-            input_dim=rep_output_dim,
-            action_dim=action_dim,
-            config=config.policy
-        ).to(self.device)
         
-        # Critic (Value) Network
-        self.critic = MLPValue(
-            input_dim=rep_output_dim + action_dim,
-            config=config.value
-        ).to(self.device)
+        # Actor and Critic networks
+        self.actor = MLPPolicy(rep_output_dim, action_dim, config.policy).to(self.device)
+        self.critic = MLPValue(rep_output_dim + action_dim, config.value).to(self.device)
         
-        # Target Networks
+        # Target networks
         self.target_representation = deepcopy(self.representation).to(self.device)
         self.target_actor = deepcopy(self.actor).to(self.device)
         self.target_critic = deepcopy(self.critic).to(self.device)
         
-        # Disable gradient for target networks
-        for target_net in [self.target_representation, self.target_actor, self.target_critic]:
-            for param in target_net.parameters():
+        # Freeze target networks
+        for target in [self.target_representation, self.target_actor, self.target_critic]:
+            for param in target.parameters():
                 param.requires_grad = False
         
         # Optimizers
-        self.actor_optimizer = optim.Adam(
-            list(self.representation.parameters()) + list(self.actor.parameters()),
-            lr=config.agent.actor_lr
-        )
-        self.critic_optimizer = optim.Adam(
-            list(self.critic.parameters()), 
-            lr=config.agent.critic_lr
-        )
+        self.rep_optimizer = optim.Adam(self.representation.parameters(), lr=config.agent.rep_lr)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.agent.actor_lr)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.agent.critic_lr)
         
-        # Buffer
+        # Buffer and hyperparameters
         self.buffer = ReplayBuffer(state_dim, action_dim, config.buffer)
-        
-        # Hyperparameters
         self.gamma = config.agent.gamma
         self.tau = config.agent.tau
-        self.update_every = config.agent.update_every
-        self.noise_scale = config.agent.noise_scale
+        self.noise = OUNoise(action_dim, theta=config.agent.noise_theta, sigma=config.agent.noise_sigma)
         self.steps = 0
-        
-        # Action noise for exploration
-        self.noise = OUNoise(action_dim, 
-                             theta=config.agent.noise_theta, 
-                             sigma=config.agent.noise_sigma)
-    
+        self.max_grad_norm = 1.0  # Gradient clipping
+
     def act(self, state, epsilon=0.0):
         with torch.no_grad():
             state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             representation = self.representation(state)
-            action = self.actor(representation)
-            action = action.cpu().numpy().flatten()
-            
-            # Add noise for exploration if epsilon > 0
+            action = self.actor(representation).cpu().numpy().flatten()
             if epsilon > 0:
-                noise = self.noise.sample() * epsilon * self.noise_scale
-                action = np.clip(action + noise, -1, 1)
-            
-            return action
-    
+                action = np.clip(action + self.noise.sample() * epsilon, -1, 1)
+            return action * 2
+
     def learn(self, batch):
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones = [x.to(self.device) for x in batch]
         
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device)
-        
-        # 获取当前表示
-        with torch.no_grad():  # 修改：在计算Critic目标时不需要梯度
-            representations = self.representation(states)
-        
-        # 更新Critic
+        # ------------------- Critic Update ------------------- #
         with torch.no_grad():
-            next_representations = self.target_representation(next_states)
-            next_actions = self.target_actor(next_representations)
-            target_q_input = torch.cat([next_representations, next_actions], dim=1)
-            target_q = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * self.target_critic(target_q_input)  # 修改：确保形状正确
+            next_repr = self.target_representation(next_states)
+            next_actions = self.target_actor(next_repr)
+            target_q = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * \
+                      self.target_critic(torch.cat([next_repr, next_actions], 1))
         
-        # 当前Q值
-        current_representations = self.representation(states)  # 修改：为Critic计算单独的表示
-        q_input = torch.cat([current_representations, actions], dim=1)
-        current_q = self.critic(q_input)
-        
-        # 计算Critic损失
+        current_repr = self.representation(states)
+        current_q = self.critic(torch.cat([current_repr, actions], 1))
         critic_loss = F.mse_loss(current_q, target_q)
         
-        # 优化Critic
         self.critic_optimizer.zero_grad()
+        self.rep_optimizer.zero_grad()
         critic_loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+        torch.nn.utils.clip_grad_norm_(self.representation.parameters(), self.max_grad_norm)
+        
         self.critic_optimizer.step()
+        self.rep_optimizer.step()
+
+        # ------------------- Actor Update ------------------- #
+        # Detach representation to avoid affecting critic update
+        current_repr = self.representation(states).detach()
+        actor_actions = self.actor(current_repr)
+        actor_loss = -self.critic(torch.cat([current_repr, actor_actions], 1)).mean()
         
-        # 更新Actor(策略)
-        # 为Actor计算新的表示
-        actor_representations = self.representation(states)  # 修改：为Actor计算单独的表示
-        actor_actions = self.actor(actor_representations)
-        actor_q_input = torch.cat([actor_representations, actor_actions], dim=1)
-        actor_loss = -self.critic(actor_q_input).mean()  # 最大化Q值
-        
-        # 优化Actor
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
         self.actor_optimizer.step()
         
-        # 更新目标网络
+        # ------------------- Target Update ------------------- #
         self.steps += 1
-        if self.steps % self.update_every == 0:
-            self.soft_update(self.representation, self.target_representation, self.tau)
-            self.soft_update(self.actor, self.target_actor, self.tau)
-            self.soft_update(self.critic, self.target_critic, self.tau)
+        if self.steps % self.config.agent.update_every == 0:
+            for target, source in zip(
+                [self.target_representation, self.target_actor, self.target_critic],
+                [self.representation, self.actor, self.critic]
+            ):
+                for target_param, param in zip(target.parameters(), source.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
         
-        return critic_loss.item() + actor_loss.item()
-    
-    def soft_update(self, local_model, target_model, tau):
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+        return abs(actor_loss.item())
+
+    def add_to_buffer(self, state, action, reward, next_state, done):
+        self.buffer.add(state, action, reward, next_state, done)
+
+    def sample_from_buffer(self):
+        return self.buffer.sample()
     
     def save(self, path):
-        torch.save({
+        save_dict = {
             'representation': self.representation.state_dict(),
             'actor': self.actor.state_dict(),
             'critic': self.critic.state_dict(),
@@ -150,8 +119,10 @@ class DDPGAgent(BaseAgent):
             'target_critic': self.target_critic.state_dict(),
             'actor_optimizer': self.actor_optimizer.state_dict(),
             'critic_optimizer': self.critic_optimizer.state_dict(),
+            'rep_optimizer': self.rep_optimizer.state_dict(),
             'steps': self.steps,
-        }, path)
+        }
+        torch.save(save_dict, path)
     
     def load(self, path):
         checkpoint = torch.load(path)
@@ -163,18 +134,10 @@ class DDPGAgent(BaseAgent):
         self.target_critic.load_state_dict(checkpoint['target_critic'])
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
-        if 'steps' in checkpoint:
-            self.steps = checkpoint['steps']
-    
-    def add_to_buffer(self, state, action, reward, next_state, done):
-        self.buffer.add(state, action, reward, next_state, done)
-    
-    def sample_from_buffer(self):
-        return self.buffer.sample()
-
+        self.rep_optimizer.load_state_dict(checkpoint['rep_optimizer'])
+        self.steps = checkpoint.get('steps', 0)
 
 class OUNoise:
-    """Ornstein-Uhlenbeck process for exploration noise"""
     def __init__(self, size, mu=0., theta=0.15, sigma=0.2):
         self.mu = mu * np.ones(size)
         self.theta = theta
@@ -185,7 +148,6 @@ class OUNoise:
         self.state = np.copy(self.mu)
         
     def sample(self):
-        x = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(len(x))
-        self.state = x + dx
+        dx = self.theta * (self.mu - self.state) + self.sigma * np.random.randn(len(self.state))
+        self.state += dx
         return self.state
