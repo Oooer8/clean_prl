@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 from IPython.display import clear_output
 import time
 
-def make_env(env_name):
-    env = gym.make(env_name)
+def make_env(env_name, render_mode="rgb_array"):
+    env = gym.make(env_name, render_mode=render_mode)
     env = ObservationWrapper(env)
     if isinstance(env.action_space, gym.spaces.Dict):
         env = DictActionWrapper(env)
@@ -42,7 +42,7 @@ def plot_rewards(episode_rewards, window_size=10):
     plt.savefig('ddpg_training_rewards.png')
     plt.close()
 
-def test_run(env_name="Pendulum-v1", num_episodes=10000, render_freq=50, plot_freq=10, save_freq=100):
+def test_run(env_name="Pendulum-v1", num_episodes=10000, plot_freq=10, save_freq=1000):
     # Initialize
     config = Config()
     env = make_env(env_name)
@@ -85,18 +85,7 @@ def test_run(env_name="Pendulum-v1", num_episodes=10000, render_freq=50, plot_fr
         steps = 0
         episode_loss = []
         
-        # 是否渲染这一集
-        should_render = (episode % render_freq == 0)
-        
-        while not done:
-            # 渲染环境（如果需要）
-            if should_render:
-                try:
-                    env.render()
-                except:
-                    # 某些环境可能不支持渲染
-                    pass
-            
+        while not done:            
             # Select action with noise (exploration)
             epsilon = max(0.01, 1.0 - episode/200)  # 衰减的探索率
             action = agent.act(state, epsilon=epsilon)

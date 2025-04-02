@@ -33,7 +33,7 @@ class AgentConfig:
     gamma: float = 0.99      # 折扣因子
     rep_lr: float = 1e-3     # 降低表示层学习率
     actor_lr: float = 1e-2   # 降低Actor学习率
-    critic_lr: float = 3e-2  # 降低Critic学习率，与actor保持一致
+    critic_lr: float = 3e-2  # 降低Critic学习率
     tau: float = 0.01       # 降低软更新系数，更加稳定
     update_every: int = 50   # 减少目标网络更新频率
     noise_scale: float = 1.0 # 噪声缩放因子
